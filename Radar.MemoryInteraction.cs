@@ -2,11 +2,13 @@
 using System.Linq;
 using System.Threading.Tasks;
 using ExileCore.Shared.Helpers;
+using SharpDX.Win32;
 using SixLabors.ImageSharp;
 using SixLabors.ImageSharp.PixelFormats;
 using SixLabors.ImageSharp.Processing;
 using SixLabors.ImageSharp.Processing.Processors.Convolution;
 using SixLabors.ImageSharp.Processing.Processors.Transforms;
+using TravelShortPathFinder.Algorithm.Utils;
 using Configuration = SixLabors.ImageSharp.Configuration;
 using Vector4 = System.Numerics.Vector4;
 
@@ -22,6 +24,8 @@ public partial class Radar
         var configuration = Configuration.Default.Clone();
         configuration.PreferContiguousImageBuffers = true;
         using var image = new Image<Rgba32>(configuration, maxX, maxY);
+        var unwalkableMask = Vector4.UnitX + Vector4.UnitW;
+        var walkableMask = Vector4.UnitY + Vector4.UnitW;
         if (Settings.Debug.DrawHeightMap)
         {
             var minHeight = gridHeightData.Min(x => x.Min());
@@ -40,8 +44,7 @@ public partial class Radar
         }
         else
         {
-            var unwalkableMask = Vector4.UnitX + Vector4.UnitW;
-            var walkableMask = Vector4.UnitY + Vector4.UnitW;
+           
             if (Settings.Debug.DisableHeightAdjust)
             {
                 Parallel.For(0, maxY, y =>
@@ -49,7 +52,7 @@ public partial class Radar
                     for (var x = 0; x < maxX; x++)
                     {
                         var terrainType = _processedTerrainData[y][x];
-                        image[x, y] = new Rgba32(terrainType is 0 ? unwalkableMask : walkableMask);
+                        image[x, y] = new Rgba32(terrainType < 2 ? unwalkableMask : walkableMask);
                     }
                 });
             }
@@ -68,7 +71,7 @@ public partial class Radar
                         var terrainType = _processedTerrainData[y][x];
                         if (offsetX >= 0 && offsetX < maxX && offsetY >= 0 && offsetY < maxY)
                         {
-                            image[offsetX, offsetY] = new Rgba32(terrainType is 0 ? unwalkableMask : walkableMask);
+                            image[offsetX, offsetY] = new Rgba32(terrainType < 2 ? unwalkableMask : walkableMask);
                         }
                     }
                 });
@@ -115,6 +118,13 @@ public partial class Radar
                 edgeDetector.Execute();
             }
 
+            //LogMessage($"Generating navGrid");
+            //_navGrid = NavGridProvider.CreateGrid(maxX, maxY, p => image[p.X, p.Y].ToVector4().Equals(walkableMask));
+            //_explorer = new TravelShortPathFinder.Algorithm.Logic.GraphMapExplorer(_navGrid, new TravelShortPathFinder.Algorithm.Data.Settings(localSelectNearNodeRange:4,segmentationSquareSize: 50, segmentationMinSegmentSize: 300, playerVisibilityRadius: 140, fastSegmentationThroughOnePoint: true));
+            //var p = new System.Drawing.Point((int)GameController.Player.GridPosNum.X, (int)GameController.Player.GridPosNum.Y);
+            //_explorer.ProcessSegmentation(p);
+            //LogMessage($"Processed segmentation ({p})");
+
             if (!Settings.Debug.SkipRecoloring)
             {
                 image.Mutate(configuration, c => c.ProcessPixelRowsAsVector4((row, p) =>
@@ -155,6 +165,47 @@ public partial class Radar
         //unfortunately the library doesn't respect our allocation settings above
         
         using var imageCopy = image.Clone(configuration);
+
+        //image.Mutate(configuration, c => c.ProcessPixelRowsAsVector4((row, p) =>
+        //{
+        //    for (var x = 0; x < row.Length - 0; x++)
+        //    {
+        //        row[x] = row[x] switch
+        //        {
+        //            { X: > 0 } => SharpDX.Color.Black.ToImguiVec4(),
+        //            { X: 0 } => SharpDX.Color.White.ToImguiVec4(),
+        //            var s => s
+        //        };
+        //    }
+        //}));
+        var pos = GameController.Player.GridPosNum;
+        image.Mutate(configuration, c => c.ProcessPixelRowsAsVector4((row, p) =>
+        {
+            for (var x = 0; x < row.Length - 0; x++)
+            {
+                row[x][0] = 1 - row[x][0];
+                row[x][1] = 1 - row[x][1];
+                row[x][2] = 1 - row[x][2];
+
+            }
+        }));
+        image[(int)pos.X, (int)pos.Y] = new Rgba32(150, 150, 150);
+        image.ProcessPixelRows(p => {
+            for (int rowIndex = 0; rowIndex < p.Height / 2; rowIndex++)
+            {
+                // Get the row span for the current row and the corresponding bottom row
+                var topRow = p.GetRowSpan(rowIndex);
+                var bottomRow = p.GetRowSpan(p.Height - rowIndex - 1);
+                var tmp = new Span<Rgba32>(topRow.ToArray());
+                // Swap the two rows
+                bottomRow.CopyTo(topRow);
+                tmp.CopyTo(bottomRow);
+                
+            }
+
+        });
+       
+        image.SaveAsBmp("test.bmp");
         Graphics.LowLevel.AddOrUpdateTexture(TextureName, imageCopy);
     }
 }

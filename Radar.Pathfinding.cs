@@ -95,9 +95,9 @@ public partial class Radar
             {
                 Func<Color> customColorFunc = null;
                 if (targetDescription.Color != null)
-                {
+                {                 
                     var color = Color.FromAbgr(uint.Parse(targetDescription.Color, NumberStyles.HexNumber));
-                    customColorFunc = () => color;
+                     customColorFunc = () => color;
                 }
 
                 var rd = new RouteDescription

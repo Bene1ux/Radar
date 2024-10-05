@@ -1,6 +1,8 @@
 ﻿using System;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
+using System.Globalization;
+using System.IO;
 using System.Linq;
 using System.Numerics;
 using System.Text.RegularExpressions;
@@ -13,6 +15,9 @@ using ExileCore.Shared.Helpers;
 using GameOffsets;
 using GameOffsets.Native;
 using ImGuiNET;
+using TravelShortPathFinder.Algorithm.Data;
+using TravelShortPathFinder.Algorithm.Logic;
+using TravelShortPathFinder.Algorithm.Utils;
 using Color = SharpDX.Color;
 using Positioned = ExileCore.PoEMemory.Components.Positioned;
 using RectangleF = SixLabors.ImageSharp.RectangleF;
@@ -29,6 +34,10 @@ public partial class Radar : BaseSettingsPlugin<RadarSettings>
     private static readonly float CameraAngleCos = (float)Math.Cos(CameraAngle);
     private static readonly float CameraAngleSin = (float)Math.Sin(CameraAngle);
     private double _mapScale;
+    //private NavGrid _navGrid;
+    //private Graph _graph;
+    //private GraphMapExplorer _explorer;
+    //private Node nextNode;
 
     private ConcurrentDictionary<string, List<TargetDescription>> _targetDescriptions = new();
     private Vector2i? _areaDimensions;
@@ -62,7 +71,7 @@ public partial class Radar : BaseSettingsPlugin<RadarSettings>
         if (GameController.Game.IsInGameState || GameController.Game.IsEscapeState)
         {
             _targetDescriptionsInArea = GetTargetDescriptionsInArea().ToDictionary(x => x.Name);
-            _currentZoneTargetEntityPaths = _targetDescriptionsInArea.Values.Where(x => x.TargetType == TargetType.Entity).DistinctBy(x => x.Name).Select(x=>(x.Name.ToLikeRegex(), x)).ToList();
+            _currentZoneTargetEntityPaths = _targetDescriptionsInArea.Values.Where(x => x.TargetType == TargetType.Entity).DistinctBy(x => x.Name).Select(x => (x.Name.ToLikeRegex(), x)).ToList();
             _terrainMetadata = GameController.IngameState.Data.DataStruct.Terrain;
             _heightData = GameController.IngameState.Data.RawTerrainHeightData;
             _allTargetLocations = GetTargets();
@@ -73,6 +82,7 @@ public partial class Radar : BaseSettingsPlugin<RadarSettings>
             _areaDimensions = GameController.IngameState.Data.AreaDimensions;
             _processedTerrainData = GameController.IngameState.Data.RawPathfindingData;
             GenerateMapTexture();
+
             _clusteredTargetLocations = ClusterTargets();
             StartPathFinding();
         }
@@ -107,6 +117,28 @@ public partial class Radar : BaseSettingsPlugin<RadarSettings>
                 LoadTargets();
                 AreaChange(GameController.Area.CurrentArea);
             }, new WaitTime(0), this, "RestartPathfinding", false, true));
+        };
+
+        Settings.LogTgt.OnPressed = () =>
+        {
+            int tileNumber = 0;
+            var tileData = GameController.Memory.ReadStdVector<TileStructure>(_terrainMetadata.TgtArray);
+            File.WriteAllText("maptgts.txt", string.Empty);
+            foreach (var tile in tileData)
+            {
+                var tgtTileStruct = GameController.Memory.Read<TgtTileStruct>(tile.TgtFilePtr);
+                var key2 = GameController.Memory.Read<TgtDetailStruct>(tgtTileStruct.TgtDetailPtr)
+               .name.ToString(GameController.Memory);
+                var coordinate = new Vector2i(
+               tileNumber % _terrainMetadata.NumCols * TileToGridConversion,
+               tileNumber / _terrainMetadata.NumCols * TileToGridConversion);
+
+                var key1 = tgtTileStruct.TgtPath.ToString(GameController.Memory);
+                File.AppendAllText("maptgts.txt", $"{key1}\t({key2}) - {coordinate}\n");
+                //LogMessage($"{key1}\t({key2}) - {coordinate}");
+                tileNumber++;
+            }
+
         };
         Settings.MaximumPathCount.OnValueChanged += (_, _) => { Core.MainRunner.Run(new Coroutine(RestartPathFinding, new WaitTime(0), this, "RestartPathfinding", false, true)); };
         Settings.TerrainColor.OnValueChanged += (_, _) => { GenerateMapTexture(); };
@@ -316,6 +348,20 @@ public partial class Radar : BaseSettingsPlugin<RadarSettings>
                 }
             }
         }
+        System.Drawing.Point loc;
+       /* if (NodeDistanceLess(nextNode, 50)&&(_explorer?.HasLocation??false))
+        {
+
+            nextNode = _explorer.NextRunNode;
+            LogMessage($"Explorer: {nextNode?.Pos} ({_explorer.PercentComplete*100}%)");
+        }
+        {
+            loc = nextNode.Pos;
+            var vec = new Vector2(loc.X, loc.Y);
+            var mapDelta = TranslateGridDeltaToMapDelta(vec - playerPosition, playerHeight + _heightData[loc.Y][loc.X]);
+            DrawBox(mapCenter + mapDelta - new Vector2(2, 2), mapCenter + mapDelta + new Vector2(2, 2), Color.Red);
+        }*/
+
 
         if (Settings.PathfindingSettings.ShowAllTargets)
         {
@@ -353,9 +399,34 @@ public partial class Radar : BaseSettingsPlugin<RadarSettings>
                     var mapPos = mapCenter + mapDelta;
                     if (Settings.PathfindingSettings.EnableTargetNameBackground)
                         DrawBox(mapPos - textOffset, mapPos + textOffset, Color.Black);
-                    DrawText(text, mapPos - textOffset, color);
+
+                    var targetDescription = description.Target;
+                    Color actualColor = color;
+                    //LogMessage("Test1");
+                    if (targetDescription.Color != null)
+                    {
+                        //LogMessage("Test2");
+                        //LogMessage($"Color1 - {targetDescription.Color} - {uint.Parse(targetDescription.Color, NumberStyles.HexNumber)}");
+                        //LogMessage($"C {Color.FromAbgr(uint.Parse(targetDescription.Color, NumberStyles.HexNumber))}");
+                        actualColor = Color.FromAbgr(uint.Parse(targetDescription.Color, NumberStyles.HexNumber));
+                    }
+
+                    DrawText(text, mapPos - textOffset, actualColor);
                 }
             }
         }
+    }
+
+    private bool NodeDistanceLess(Node node, float distance)
+    {
+        if (node == null) return true;
+        var n = new Vector2(node.Pos.X, node.Pos.Y);
+        return n.Distance(GameController.Player.GridPosNum) < distance;
+    }
+
+    public override Job Tick()
+    {
+       // _explorer?.Update(new System.Drawing.Point((int)GameController.Player.GridPosNum.X, (int)GameController.Player.GridPosNum.Y));
+        return base.Tick();
     }
 }
